@@ -1,0 +1,1083 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  Privacy: this page has no backend. The policy below blocks it from sending data anywhere.
+  The only outside requests allowed are downloads of the open-source text reader (Tesseract.js)
+  from jsDelivr / tessdata, and only when you import a screenshot. Your image never leaves the browser.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob: https://cdn.jsdelivr.net; connect-src 'self' blob: data: https://cdn.jsdelivr.net https://tessdata.projectnaptha.com; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Backdoor Roth Allocator</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --surface: #ffffff; --surface-2: #f0f2f5; --text: #1a1d23; --muted: #5b6472;
+    --border: #dde1e7; --accent: #2a64d6; --accent-soft: #e6eefb; --accent-text: #ffffff;
+    --good: #1d8048; --warn: #9a5c00; --bad: #c03636; --bar: #d3d9e2; --target: #1a1d23;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101317; --surface: #191d23; --surface-2: #20252c; --text: #e7e9ed; --muted: #9aa3b0;
+      --border: #2c323b; --accent: #6f9ef2; --accent-soft: #1e2a3f; --accent-text: #0d1117;
+      --good: #4cc27e; --warn: #e3a440; --bad: #ef6b6b; --bar: #353c46; --target: #e7e9ed;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101317; --surface: #191d23; --surface-2: #20252c; --text: #e7e9ed; --muted: #9aa3b0;
+    --border: #2c323b; --accent: #6f9ef2; --accent-soft: #1e2a3f; --accent-text: #0d1117;
+    --good: #4cc27e; --warn: #e3a440; --bad: #ef6b6b; --bar: #353c46; --target: #e7e9ed;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  header h1 { margin: 0 0 4px; font-size: 1.6rem; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--muted); }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px; margin-top: 16px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 1.1rem; display: flex; align-items: center; gap: 10px; }
+  .step {
+    display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+    background: var(--accent); color: var(--accent-text); font-size: 0.8rem; font-weight: 700; flex: none;
+  }
+  .sub { color: var(--muted); margin: 0 0 14px; font-size: 0.92rem; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  label { font-weight: 600; font-size: 0.92rem; }
+  input, select, textarea, button { font: inherit; color: inherit; }
+  input[type="text"], input[type="number"], textarea {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 10px; min-width: 0;
+  }
+  input:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  textarea { width: 100%; min-height: 110px; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem; }
+  button {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.link { background: none; border: none; padding: 4px 6px; color: var(--muted); }
+  button.link:hover { color: var(--bad); }
+  .money { position: relative; display: inline-flex; align-items: center; }
+  .money::before { content: "$"; position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+  .money input { padding-left: 22px; }
+  .amount-input { width: 160px; font-size: 1.1rem; font-weight: 600; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { border: none; border-radius: 0; background: var(--surface); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  .table-wrap { overflow-x: auto; margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th { text-align: left; font-weight: 600; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  .t-ticker { width: 100px; text-transform: uppercase; }
+  .t-class { width: 170px; }
+  .t-name { width: 100%; min-width: 180px; }
+  .fname { font-size: 0.82rem; color: var(--muted); font-weight: 400; }
+  .t-name-sm { width: 100%; max-width: 300px; margin-top: 4px; padding: 4px 8px !important; font-size: 0.85rem; }
+  .t-value { width: 140px; text-align: right; }
+  .t-pct { width: 80px; text-align: right; }
+  .t-fund { width: 100px; text-transform: uppercase; }
+  .pct-wrap { display: inline-flex; align-items: center; gap: 4px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 0.85rem; }
+  .status { min-height: 1.4em; margin-top: 8px; font-size: 0.9rem; }
+  .status.ok { color: var(--good); } .status.err { color: var(--bad); } .status.info { color: var(--muted); }
+  .drop {
+    border: 1.5px dashed var(--border); border-radius: 10px; padding: 14px; margin-top: 10px;
+    background: var(--surface-2);
+  }
+  .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .privacy-note { font-size: 0.84rem; color: var(--muted); margin-top: 10px; }
+  .sumline { margin-top: 10px; font-weight: 600; }
+  .sumline.ok { color: var(--good); } .sumline.bad { color: var(--bad); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-top: 6px; }
+  .stat { background: var(--surface-2); border-radius: 10px; padding: 12px; }
+  .stat .k { font-size: 0.8rem; color: var(--muted); }
+  .stat .v { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .d { font-size: 0.82rem; color: var(--muted); }
+  .buy { font-weight: 700; color: var(--good); }
+  .buy.zero { color: var(--muted); font-weight: 400; }
+  .drift-pos { color: var(--warn); } .drift-ok { color: var(--good); }
+  .bar { position: relative; height: 8px; background: var(--bar); border-radius: 4px; min-width: 110px; }
+  .bar .cur { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--muted); opacity: 0.55; }
+  .bar .aft { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--accent); }
+  .bar .tgt { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--target); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  pre.buylist {
+    background: var(--surface-2); border-radius: 8px; padding: 12px; margin: 10px 0 0;
+    white-space: pre-wrap; font-size: 0.9rem;
+  }
+  .warn-box { border-left: 3px solid var(--warn); padding: 6px 10px; background: var(--surface-2); border-radius: 6px; margin-top: 10px; font-size: 0.88rem; }
+  details { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); margin-top: 10px; }
+  details > summary { cursor: pointer; padding: 12px 14px; font-weight: 600; }
+  details > div { padding: 0 16px 14px; font-size: 0.93rem; }
+  details li { margin-bottom: 6px; }
+  footer { color: var(--muted); font-size: 0.82rem; margin-top: 24px; }
+  .hidden { display: none !important; }
+  @media (max-width: 640px) {
+    .t-class { width: 120px; } .t-value { width: 110px; }
+    .t-pct { width: 56px; } .t-fund { width: 76px; }
+    .hide-sm { display: none; }
+    td, th { padding: 6px 5px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Backdoor Roth Allocator</h1>
+    <p>See how to invest this year's Roth money to move closer to your target allocation, without selling anything.</p>
+  </header>
+
+  <!-- 1. Amount -->
+  <section class="card" aria-labelledby="h-amount">
+    <h2 id="h-amount"><span class="step">1</span>Amount to invest</h2>
+    <p class="sub">The money you converted into your Roth IRA and haven't invested yet. The 2026 IRA limit is $7,500 ($8,600 if you're 50+).</p>
+    <div class="row">
+      <span class="money"><input id="amount" class="amount-input" type="text" inputmode="decimal" value="7,500" aria-label="Amount to invest"></span>
+      <button data-amt="7500">$7,500</button>
+      <button data-amt="8600">$8,600</button>
+    </div>
+  </section>
+
+  <!-- 2. Holdings -->
+  <section class="card" aria-labelledby="h-hold">
+    <h2 id="h-hold"><span class="step">2</span>Your current Roth holdings</h2>
+    <p class="sub">Type them in, or import from a screenshot, CSV export or pasted text. Imports only pick up tickers, fund names and dollar values, and you can edit everything below.</p>
+
+    <div class="row">
+      <button id="btn-img">Import screenshot</button>
+      <button id="btn-csv">Import CSV</button>
+      <button id="btn-paste">Paste text</button>
+      <button id="btn-sample" class="link" style="color:var(--accent)">Try sample data</button>
+      <input id="file-img" type="file" accept="image/*" class="hidden">
+      <input id="file-csv" type="file" accept=".csv,text/csv,.txt" class="hidden">
+    </div>
+    <div id="drop" class="drop small muted">Drop a screenshot or CSV here, or press Ctrl+V / ⌘V to paste a screenshot.</div>
+    <div id="paste-box" class="hidden" style="margin-top:10px">
+      <textarea id="paste-text" placeholder="Paste rows from your brokerage, e.g.&#10;VTI   Vanguard Total Stock Market ETF   $4,257.82&#10;VXUS  Vanguard Total Intl Stock ETF     $1,512.40"></textarea>
+      <div class="row" style="margin-top:6px"><button id="btn-parse" class="primary">Import pasted text</button><span class="small muted">The text box is cleared after import.</span></div>
+    </div>
+    <div id="import-status" class="status" role="status" aria-live="polite"></div>
+    <p class="privacy-note">🔒 Everything runs in your browser. Screenshots are read on your device and then discarded. They're never uploaded or saved. For best results, crop the image to just the holdings table so account numbers and your name aren't in it.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Ticker</th><th>Fund name</th><th>Asset class</th><th class="num">Current value</th><th></th></tr></thead>
+        <tbody id="hold-body"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="btn-add-row">+ Add holding</button>
+      <button id="btn-clear" class="link">Clear all</button>
+      <span id="hold-total" class="small muted" style="margin-left:auto"></span>
+    </div>
+    <datalist id="class-list"></datalist>
+  </section>
+
+  <!-- 3. Targets -->
+  <section class="card" aria-labelledby="h-tgt">
+    <h2 id="h-tgt"><span class="step">3</span>Target allocation</h2>
+    <p class="sub">Set targets for each fund, or for each asset class (e.g. 70% US stocks, 20% international, 10% bonds). Targets must add up to 100%.</p>
+    <div class="row">
+      <div class="seg" role="group" aria-label="Allocate by">
+        <button id="mode-fund" aria-pressed="true">By fund / ticker</button>
+        <button id="mode-class" aria-pressed="false">By asset class</button>
+      </div>
+      <button id="btn-use-current">Use current mix as targets</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead id="tgt-head"></thead>
+        <tbody id="tgt-body"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="add-key" type="text" placeholder="Add a fund you don't own yet" style="width:230px">
+      <button id="btn-add-key">Add</button>
+    </div>
+    <div id="tgt-sum" class="sumline"></div>
+    <label class="small" style="margin-top:12px;font-weight:400;display:flex;gap:8px;align-items:flex-start">
+      <input id="remember" type="checkbox" style="margin-top:3px"><span>Remember my tickers and targets on this device (dollar amounts are never saved)</span>
+    </label>
+  </section>
+
+  <!-- 4. Results -->
+  <section class="card" aria-labelledby="h-res">
+    <h2 id="h-res"><span class="step">4</span>How to invest it</h2>
+    <p class="sub">Money goes to the funds furthest below target first, until they're balanced with each other. Nothing is sold.</p>
+    <div id="results"></div>
+  </section>
+
+  <!-- Info -->
+  <section style="margin-top:24px" aria-label="Good to know">
+    <h2 style="font-size:1.1rem;margin:0 0 4px">Good to know</h2>
+
+    <details>
+      <summary>Backdoor Roth checklist and common pitfalls</summary>
+      <div>
+        <ol>
+          <li><strong>Contribute</strong> to a traditional IRA as a <em>non-deductible</em> contribution, up to $7,500 for 2026 ($8,600 if 50+). Contributions for a tax year can be made until the tax-filing deadline the following April.</li>
+          <li><strong>Let it settle</strong> as cash. Many people leave it in the settlement/money-market fund rather than investing before converting.</li>
+          <li><strong>Convert</strong> the traditional IRA balance to your Roth IRA.</li>
+          <li><strong>Invest</strong> it inside the Roth. That's what this tool helps with.</li>
+          <li><strong>File Form 8606</strong> with your taxes to report the non-deductible contribution and the conversion.</li>
+        </ol>
+        <p><strong>Pro-rata rule (the big one).</strong> If you have <em>any</em> pre-tax money in a traditional, SEP or SIMPLE IRA on December 31 of the year you convert, part of your conversion becomes taxable. Money in a 401(k) or 403(b) doesn't count. Rolling pre-tax IRA money into a workplace 401(k) before year-end is a common fix.</p>
+        <div class="stat" style="margin:8px 0 12px">
+          <div class="k">Quick pro-rata check: pre-tax IRA balance you expect on Dec 31</div>
+          <div class="row" style="margin-top:6px">
+            <span class="money"><input id="pretax" type="text" inputmode="decimal" placeholder="0" style="width:150px" aria-label="Pre-tax IRA balance on December 31"></span>
+            <span id="prorata-out" class="small"></span>
+          </div>
+        </div>
+        <ul>
+          <li><strong>Interest before converting:</strong> any interest earned while the money waits in the traditional IRA is taxable when converted, but it's usually only a few dollars.</li>
+          <li><strong>Why use the backdoor:</strong> you'd only need it if your income is too high to contribute to a Roth directly. Check IRS.gov for this year's income limits.</li>
+          <li><strong>Spouses</strong> can each do their own backdoor Roth, including through a spousal IRA.</li>
+          <li><strong>Mega backdoor Roth:</strong> some 401(k) plans let you make after-tax contributions and convert them, which allows much larger amounts.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary>Real-world things to watch when you place the trades</summary>
+      <div>
+        <ul>
+          <li><strong>Whole vs. fractional shares:</strong> not every brokerage supports fractional ETF shares. If yours doesn't, round down to whole shares and leave the rest as cash (or add it to your largest buy).</li>
+          <li><strong>Mutual fund minimums:</strong> some funds need $1,000–$3,000 for a first purchase. You can't add a small amount to a fund you don't own yet.</li>
+          <li><strong>Prices move:</strong> this tool works in dollars. Use a limit order or "buy in dollars" if your broker supports it.</li>
+          <li><strong>Settlement:</strong> converted money may take a day or two to become available to trade.</li>
+          <li><strong>Overlapping funds:</strong> VTI, VOO, FXAIX and SWTSX are all mostly US large-company stocks. Use "By asset class" so overlapping funds count together.</li>
+          <li><strong>Small amounts, big accounts:</strong> once your Roth is large, one year's contribution can only nudge the mix. The "conversions to reach target" estimate shows how long new money alone would take.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary>Privacy and how this tool handles your data</summary>
+      <div>
+        <ul>
+          <li>No accounts, no server, no database, no analytics, no cookies.</li>
+          <li>Everything runs in your browser. The page's security policy blocks it from sending your data anywhere.</li>
+          <li>Screenshots are read on your device with the open-source Tesseract text reader. The reader's code is downloaded the first time you import an image. Your image is never uploaded, and it's discarded right after reading.</li>
+          <li>The text read from screenshots, CSVs and pasted text is filtered: only tickers, fund names and dollar amounts are kept. Long number strings (like account numbers), masked account numbers and email addresses are dropped, and the raw text is never shown or stored.</li>
+          <li>"Remember" (off by default) saves only tickers, fund names, asset classes, targets and the amount to invest, and only in this browser. Unchecking it erases them.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary>Disclaimer</summary>
+      <div>
+        <p>This is a calculator, not financial, tax or investment advice. It does math on targets <em>you</em> choose and doesn't recommend specific investments. Check the numbers before trading, and talk to a tax professional about your situation.</p>
+      </div>
+    </details>
+  </section>
+
+  <footer>Runs entirely in your browser. Built as a personal tool.</footer>
+</div>
+
+<script>
+"use strict";
+
+/* ---------- Reference data ---------- */
+const CLASSES = ["US Stocks", "International Stocks", "Global Stocks", "Bonds", "Real Estate", "Cash", "Other"];
+const KNOWN = {};   // ticker -> asset class
+const NAMES = {};   // ticker -> fund name
+const addKnown = (cls, list) => list.trim().split("\n").forEach(line => {
+  const [t, name] = line.split("|").map(s => s.trim());
+  KNOWN[t] = cls; NAMES[t] = name;
+});
+addKnown("US Stocks", `
+  VTI|Vanguard Total Stock Market ETF
+  VOO|Vanguard S&P 500 ETF
+  ITOT|iShares Core S&P Total U.S. Stock Market ETF
+  SCHB|Schwab U.S. Broad Market ETF
+  SPY|SPDR S&P 500 ETF Trust
+  IVV|iShares Core S&P 500 ETF
+  SPLG|SPDR Portfolio S&P 500 ETF
+  SPYM|SPDR Portfolio S&P 500 ETF
+  SCHX|Schwab U.S. Large-Cap ETF
+  QQQ|Invesco QQQ Trust
+  QQQM|Invesco NASDAQ 100 ETF
+  SCHD|Schwab U.S. Dividend Equity ETF
+  VUG|Vanguard Growth ETF
+  VTV|Vanguard Value ETF
+  VB|Vanguard Small-Cap ETF
+  VO|Vanguard Mid-Cap ETF
+  VBR|Vanguard Small-Cap Value ETF
+  AVUV|Avantis U.S. Small Cap Value ETF
+  IJR|iShares Core S&P Small-Cap ETF
+  IWM|iShares Russell 2000 ETF
+  RSP|Invesco S&P 500 Equal Weight ETF
+  MGK|Vanguard Mega Cap Growth ETF
+  SCHG|Schwab U.S. Large-Cap Growth ETF
+  DGRO|iShares Core Dividend Growth ETF
+  FXAIX|Fidelity 500 Index Fund
+  FSKAX|Fidelity Total Market Index Fund
+  FZROX|Fidelity ZERO Total Market Index Fund
+  FNILX|Fidelity ZERO Large Cap Index Fund
+  SWTSX|Schwab Total Stock Market Index Fund
+  SWPPX|Schwab S&P 500 Index Fund
+  VTSAX|Vanguard Total Stock Market Index Fund Admiral
+  VFIAX|Vanguard 500 Index Fund Admiral
+  VIGAX|Vanguard Growth Index Fund Admiral`);
+addKnown("International Stocks", `
+  VXUS|Vanguard Total International Stock ETF
+  IXUS|iShares Core MSCI Total International Stock ETF
+  VEA|Vanguard FTSE Developed Markets ETF
+  VWO|Vanguard FTSE Emerging Markets ETF
+  IEFA|iShares Core MSCI EAFE ETF
+  IEMG|iShares Core MSCI Emerging Markets ETF
+  SCHF|Schwab International Equity ETF
+  SCHE|Schwab Emerging Markets Equity ETF
+  AVDV|Avantis International Small Cap Value ETF
+  AVEM|Avantis Emerging Markets Equity ETF
+  SPDW|SPDR Portfolio Developed World ex-US ETF
+  EFA|iShares MSCI EAFE ETF
+  FTIHX|Fidelity Total International Index Fund
+  FZILX|Fidelity ZERO International Index Fund
+  FSPSX|Fidelity International Index Fund
+  VTIAX|Vanguard Total International Stock Index Fund Admiral
+  VTMGX|Vanguard Developed Markets Index Fund Admiral
+  SWISX|Schwab International Index Fund`);
+addKnown("Global Stocks", `
+  VT|Vanguard Total World Stock ETF
+  ACWI|iShares MSCI ACWI ETF
+  VTWAX|Vanguard Total World Stock Index Fund Admiral`);
+addKnown("Bonds", `
+  BND|Vanguard Total Bond Market ETF
+  AGG|iShares Core U.S. Aggregate Bond ETF
+  SCHZ|Schwab U.S. Aggregate Bond ETF
+  BNDX|Vanguard Total International Bond ETF
+  IUSB|iShares Core Total USD Bond Market ETF
+  VGIT|Vanguard Intermediate-Term Treasury ETF
+  VGSH|Vanguard Short-Term Treasury ETF
+  VGLT|Vanguard Long-Term Treasury ETF
+  TLT|iShares 20+ Year Treasury Bond ETF
+  IEF|iShares 7-10 Year Treasury Bond ETF
+  SHY|iShares 1-3 Year Treasury Bond ETF
+  VTEB|Vanguard Tax-Exempt Bond ETF
+  FXNAX|Fidelity U.S. Bond Index Fund
+  FUAMX|Fidelity Intermediate Treasury Bond Index Fund
+  VWOB|Vanguard Emerging Markets Government Bond ETF
+  LQD|iShares iBoxx $ Investment Grade Corporate Bond ETF
+  VCIT|Vanguard Intermediate-Term Corporate Bond ETF
+  VCSH|Vanguard Short-Term Corporate Bond ETF
+  TIP|iShares TIPS Bond ETF
+  VTIP|Vanguard Short-Term Inflation-Protected Securities ETF
+  SCHP|Schwab U.S. TIPS ETF
+  MUB|iShares National Muni Bond ETF
+  VBTLX|Vanguard Total Bond Market Index Fund Admiral
+  SWAGX|Schwab U.S. Aggregate Bond Index Fund`);
+addKnown("Real Estate", `
+  VNQ|Vanguard Real Estate ETF
+  SCHH|Schwab U.S. REIT ETF
+  XLRE|Real Estate Select Sector SPDR Fund
+  FSRNX|Fidelity Real Estate Index Fund
+  VGSLX|Vanguard Real Estate Index Fund Admiral`);
+addKnown("Cash", `
+  SPAXX|Fidelity Government Money Market Fund
+  FDRXX|Fidelity Government Cash Reserves
+  FZFXX|Fidelity Treasury Money Market Fund
+  VMFXX|Vanguard Federal Money Market Fund
+  VUSXX|Vanguard Treasury Money Market Fund
+  SWVXX|Schwab Value Advantage Money Fund
+  SNSXX|Schwab U.S. Treasury Money Fund
+  SGOV|iShares 0-3 Month Treasury Bond ETF
+  BIL|SPDR Bloomberg 1-3 Month T-Bill ETF
+  CASH|Cash`);
+
+/* ---------- State ---------- */
+let uid = 0;
+const state = {
+  amount: 7500,
+  mode: "fund",              // "fund" | "class"
+  holdings: [],              // {id, ticker, name, cls, value}
+  fundTargets: {},           // TICKER -> pct
+  addedFunds: [],            // tickers targeted but not held
+  addedNames: {},            // added ticker -> fund name
+  classTargets: {},          // class -> pct
+  addedClasses: [],          // classes targeted but not held
+  classFund: {},             // class -> ticker to buy
+};
+const newRow = (ticker = "", value = "", cls = "", name = "") => ({ id: ++uid, ticker, value, cls, name });
+
+/* ---------- Helpers ---------- */
+const $ = s => document.querySelector(s);
+const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const fmt$ = n => usd.format(n || 0);
+const fmtPct = (x, d = 1) => (x * 100).toFixed(d) + "%";
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const cleanTicker = s => String(s || "").toUpperCase().replace(/[^A-Z0-9.\-]/g, "").slice(0, 10);
+function parseMoney(s) {
+  const n = parseFloat(String(s ?? "").replace(/[^0-9.]/g, ""));
+  return isFinite(n) && n > 0 ? n : 0;
+}
+const classOf = row => (row.cls || "").trim() || KNOWN[cleanTicker(row.ticker)] || "Other";
+const cleanName = s => String(s || "").replace(/[^A-Za-z0-9 &.,'()\/%+\-]/g, " ").replace(/\s+/g, " ").trim().slice(0, 70);
+// Name typed or imported for a held ticker, else the built-in name, else "".
+function fundName(ticker) {
+  const row = state.holdings.find(r => cleanTicker(r.ticker) === ticker && r.name);
+  return row?.name || state.addedNames[ticker] || NAMES[ticker] || "";
+}
+
+/* ---------- Allocation engine ----------
+   Each group i has a current value v_i and target weight w_i (sum w = 1).
+   After investing C, its ideal value is w_i (T + C), so its gap is g_i = w_i (T + C) - v_i.
+   We buy x_i = max(0, g_i - λ w_i), choosing λ ≥ 0 so the buys sum to C.
+   This fills the most-underweight funds first (measured relative to their target) until
+   they're all equally short, never sells, and hits the target exactly when nothing is overweight. */
+function allocate(groups, C) {
+  const T = groups.reduce((s, g) => s + g.value, 0);
+  const N = T + C;
+  const buys = groups.map(() => 0);
+  if (C <= 0 || !groups.some(g => g.weight > 0)) return buys;
+  const gap = groups.map(g => g.weight * N - g.value);
+  const spend = lam => groups.reduce((s, g, i) => s + Math.max(0, gap[i] - lam * g.weight), 0);
+  let lo = 0, hi = Math.max(0, ...groups.map((g, i) => g.weight > 0 ? gap[i] / g.weight : 0));
+  for (let k = 0; k < 200; k++) {
+    const mid = (lo + hi) / 2;
+    if (spend(mid) > C) lo = mid; else hi = mid;
+  }
+  groups.forEach((g, i) => { buys[i] = Math.max(0, gap[i] - hi * g.weight); });
+  // Scale to exactly C, then round to cents and give any leftover cents to the largest buy.
+  const s = buys.reduce((a, b) => a + b, 0);
+  if (s <= 0) return buys;
+  const cents = buys.map(b => Math.floor((b * C / s) * 100));
+  let left = Math.round(C * 100) - cents.reduce((a, b) => a + b, 0);
+  const order = cents.map((c, i) => i).sort((a, b) => cents[b] - cents[a]);
+  for (let k = 0; left > 0; k = (k + 1) % order.length, left--) cents[order[k]]++;
+  return cents.map(c => c / 100);
+}
+
+/* ---------- Grouping ---------- */
+function heldByTicker() {
+  const m = new Map();
+  for (const r of state.holdings) {
+    const t = cleanTicker(r.ticker);
+    if (!t) continue;
+    const cur = m.get(t) || { value: 0, cls: classOf(r) };
+    cur.value += parseMoney(r.value);
+    m.set(t, cur);
+  }
+  return m;
+}
+function heldByClass() {
+  const m = new Map();
+  for (const [t, h] of heldByTicker()) {
+    const cur = m.get(h.cls) || { value: 0, tickers: [] };
+    cur.value += h.value;
+    cur.tickers.push({ t, value: h.value });
+    m.set(h.cls, cur);
+  }
+  return m;
+}
+function defaultFundFor(cls) {
+  const c = heldByClass().get(cls);
+  if (!c || !c.tickers.length) return "";
+  return c.tickers.slice().sort((a, b) => b.value - a.value)[0].t;
+}
+function targetKeys() {
+  if (state.mode === "fund") {
+    const keys = [...heldByTicker().keys()];
+    state.addedFunds.forEach(t => { if (!keys.includes(t)) keys.push(t); });
+    return keys;
+  }
+  const keys = [...heldByClass().keys()];
+  state.addedClasses.forEach(c => { if (!keys.includes(c)) keys.push(c); });
+  return keys;
+}
+function buildGroups() {
+  const fund = state.mode === "fund";
+  const held = fund ? heldByTicker() : heldByClass();
+  const targets = fund ? state.fundTargets : state.classTargets;
+  return targetKeys().map(k => ({
+    key: k,
+    value: held.get(k)?.value || 0,
+    weight: (parseFloat(targets[k]) || 0) / 100,
+  }));
+}
+
+/* ---------- Rendering: holdings ---------- */
+function renderHoldings() {
+  const body = $("#hold-body");
+  if (!state.holdings.length) {
+    body.innerHTML = `<tr><td colspan="5" class="muted small">No holdings yet. Add one, import, or start with $0 if your Roth is new.</td></tr>`;
+  } else {
+    body.innerHTML = state.holdings.map(r => {
+      const t = cleanTicker(r.ticker);
+      const guess = KNOWN[t] || "Other";
+      return `<tr data-id="${r.id}">
+        <td><input type="text" class="t-ticker" data-f="ticker" value="${esc(r.ticker)}" placeholder="VTI" aria-label="Ticker" autocomplete="off"></td>
+        <td><input type="text" class="t-name" data-f="name" value="${esc(r.name)}" placeholder="Fund name (optional)" aria-label="Fund name" autocomplete="off"></td>
+        <td><input type="text" class="t-class" data-f="cls" value="${esc(r.cls)}" placeholder="${esc(guess)}" list="class-list" aria-label="Asset class" autocomplete="off"></td>
+        <td class="num"><span class="money"><input type="text" class="t-value" data-f="value" value="${esc(r.value)}" inputmode="decimal" placeholder="0.00" aria-label="Current value" autocomplete="off"></span></td>
+        <td><button class="link" data-del="${r.id}" aria-label="Remove row">✕</button></td>
+      </tr>`;
+    }).join("");
+  }
+  updateHoldTotal();
+}
+function updateHoldTotal() {
+  const total = state.holdings.reduce((s, r) => s + parseMoney(r.value), 0);
+  $("#hold-total").textContent = state.holdings.length ? `Total: ${fmt$(total)}` : "";
+}
+
+/* ---------- Rendering: targets ---------- */
+function renderTargets() {
+  const fund = state.mode === "fund";
+  $("#mode-fund").setAttribute("aria-pressed", fund);
+  $("#mode-class").setAttribute("aria-pressed", !fund);
+  $("#add-key").placeholder = fund ? "Add a fund you don't own yet" : "Add an asset class";
+  $("#add-key").setAttribute("list", fund ? "" : "class-list");
+  $("#tgt-head").innerHTML = fund
+    ? `<tr><th>Fund</th><th class="num">Current</th><th class="num">Target</th><th></th></tr>`
+    : `<tr><th>Asset class</th><th class="num">Current</th><th class="num">Target</th><th>Buy with</th><th></th></tr>`;
+  const keys = targetKeys();
+  const targets = fund ? state.fundTargets : state.classTargets;
+  const added = fund ? state.addedFunds : state.addedClasses;
+  const byClass = fund ? null : heldByClass();
+  if (!keys.length) {
+    $("#tgt-body").innerHTML = `<tr><td colspan="5" class="muted small">Add holdings above, or add a ${fund ? "fund" : "class"} below to set a target.</td></tr>`;
+  } else {
+    $("#tgt-body").innerHTML = keys.map(k => {
+      const removable = added.includes(k);
+      let buyWith = "";
+      if (!fund) {
+        const opts = (byClass.get(k)?.tickers || []).map(x => `<option value="${esc(x.t)}">`).join("");
+        buyWith = `<td><input type="text" class="t-fund" data-fund="${esc(k)}" value="${esc(state.classFund[k] || "")}" placeholder="${esc(defaultFundFor(k) || "ticker")}" list="dl-${esc(k).replace(/\s/g, "_")}" aria-label="Fund to buy for ${esc(k)}" autocomplete="off"><datalist id="dl-${esc(k).replace(/\s/g, "_")}">${opts}</datalist></td>`;
+      }
+      return `<tr>
+        <td><strong>${esc(k)}</strong>${removable ? ` <span class="small muted">(new)</span>` : ""}${
+          fund && removable
+            ? `<div><input type="text" class="t-name-sm" data-addname="${esc(k)}" value="${esc(fundName(k))}" placeholder="Fund name (optional)" aria-label="Fund name for ${esc(k)}" autocomplete="off"></div>`
+            : fund && fundName(k) ? `<div class="fname">${esc(fundName(k))}</div>` : ""}</td>
+        <td class="num muted" data-cur="${esc(k)}">–</td>
+        <td class="num"><span class="pct-wrap"><input type="text" class="t-pct" data-tgt="${esc(k)}" value="${esc(targets[k] ?? "")}" inputmode="decimal" placeholder="0" aria-label="Target percent for ${esc(k)}" autocomplete="off">%</span></td>
+        ${buyWith}
+        <td>${removable ? `<button class="link" data-rmkey="${esc(k)}" aria-label="Remove ${esc(k)}">✕</button>` : ""}</td>
+      </tr>`;
+    }).join("");
+  }
+  renderClassList();
+}
+function renderClassList() {
+  const all = new Set(CLASSES);
+  state.holdings.forEach(r => r.cls && all.add(r.cls.trim()));
+  $("#class-list").innerHTML = [...all].map(c => `<option value="${esc(c)}">`).join("");
+}
+
+/* ---------- Rendering: results ---------- */
+function targetSum() {
+  const t = state.mode === "fund" ? state.fundTargets : state.classTargets;
+  return targetKeys().reduce((s, k) => s + (parseFloat(t[k]) || 0), 0);
+}
+function renderResults() {
+  const out = $("#results");
+  const C = state.amount;
+  const groups = buildGroups();
+  const T = groups.reduce((s, g) => s + g.value, 0);
+
+  // current % in the targets table
+  groups.forEach(g => {
+    const cell = document.querySelector(`[data-cur="${CSS.escape(g.key)}"]`);
+    if (cell) cell.textContent = T > 0 ? fmtPct(g.value / T) : "–";
+  });
+
+  const sum = targetSum();
+  const sumEl = $("#tgt-sum");
+  const sumOk = Math.abs(sum - 100) < 0.05;
+  sumEl.className = "sumline " + (sumOk ? "ok" : "bad");
+  sumEl.textContent = groups.length ? `Targets total ${sum.toFixed(1)}%${sumOk ? " ✓" : " (must equal 100%)"}` : "";
+
+  if (C <= 0) { out.innerHTML = `<p class="muted">Enter an amount to invest in step 1.</p>`; return; }
+  if (!groups.length) { out.innerHTML = `<p class="muted">Add your holdings (or a fund you want to buy) and set targets to see a plan.</p>`; return; }
+  if (!sumOk) { out.innerHTML = `<p class="muted">Adjust your targets so they add up to 100%. They're at ${sum.toFixed(1)}% now.</p>`; return; }
+
+  const buys = allocate(groups, C);
+  const N = T + C;
+  const fund = state.mode === "fund";
+  const rows = groups.map((g, i) => {
+    const cur = T > 0 ? g.value / T : 0;
+    const aft = (g.value + buys[i]) / N;
+    const buyTicker = fund ? g.key : (cleanTicker(state.classFund[g.key]) || defaultFundFor(g.key));
+    return { ...g, buy: buys[i], cur, aft, buyTicker, name: buyTicker ? fundName(buyTicker) : "" };
+  }).sort((a, b) => b.buy - a.buy || b.weight - a.weight);
+
+  // The fund/class furthest from its target today, and where it lands after this investment.
+  const worst = rows.reduce((a, r) => Math.abs(r.cur - r.weight) > Math.abs(a.cur - a.weight) ? r : a, rows[0]);
+  const ptsOff = x => (x * 100).toFixed(1) + " pts";
+
+  // How many same-size contributions until new money alone reaches the target (no market moves).
+  let reach;
+  const stuck = rows.filter(r => r.weight === 0 && r.value > 0);
+  if (stuck.length) {
+    reach = { v: "Not exactly", d: `You hold ${stuck.map(r => r.key).join(", ")} with a 0% target. New money only shrinks its share; it never reaches 0%.` };
+  } else {
+    const need = Math.max(...rows.filter(r => r.weight > 0).map(r => r.value / r.weight)) - T;
+    if (need <= C + 0.01) reach = { v: "This one", d: "This conversion gets you to your target." };
+    else {
+      const n = Math.ceil(need / C);
+      reach = { v: `≈ ${n} conversions`, d: `About ${fmt$(need)} of new money at ${fmt$(C)} each, including this one. Assumes no market movement.` };
+    }
+  }
+
+  const missingFund = rows.filter(r => r.buy > 0 && !r.buyTicker);
+  const buyLines = rows.filter(r => r.buy > 0).map(r =>
+    `Buy ${fmt$(r.buy).padStart(12)}  of  ${r.buyTicker ? (r.name ? r.buyTicker.padEnd(6) + "  " + r.name : r.buyTicker) : "(pick a fund for " + r.key + ")"}${fund ? "" : "   [" + r.key + "]"}`);
+
+  out.innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="k">Invest</div><div class="v">${fmt$(C)}</div><div class="d">Roth goes from ${fmt$(T)} to ${fmt$(N)}</div></div>
+      <div class="stat"><div class="k">Furthest from target: <strong>${esc(worst.key)}</strong></div><div class="v">${T > 0 ? fmtPct(worst.cur) : "0.0%"} → ${fmtPct(worst.aft)}</div><div class="d">Now → after, vs. a ${fmtPct(worst.weight)} target. Off by ${ptsOff(Math.abs(worst.cur - worst.weight))} now, ${ptsOff(Math.abs(worst.aft - worst.weight))} after.</div></div>
+      <div class="stat"><div class="k">Conversions to reach target</div><div class="v">${esc(reach.v)}</div><div class="d">${esc(reach.d)}</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>${fund ? "Fund" : "Asset class → fund"}</th><th class="num hide-sm">Current</th><th class="num">Target</th>
+          <th class="num">Buy</th><th class="num">After</th><th class="hide-sm">Mix</th>
+        </tr></thead>
+        <tbody>${rows.map(r => {
+          const off = r.aft - r.weight;
+          return `<tr>
+            <td><strong>${esc(r.key)}</strong>${!fund ? ` <span class="muted">→ ${esc(r.buyTicker || "?")}</span>` : ""}${r.name ? `<div class="fname">${esc(r.name)}</div>` : ""}<div class="small muted">${fmt$(r.value)}</div></td>
+            <td class="num hide-sm">${T > 0 ? fmtPct(r.cur) : "–"}</td>
+            <td class="num">${fmtPct(r.weight)}</td>
+            <td class="num"><span class="buy ${r.buy > 0 ? "" : "zero"}">${r.buy > 0 ? fmt$(r.buy) : "$0"}</span></td>
+            <td class="num">${fmtPct(r.aft)} <div class="small ${Math.abs(off) < 0.0005 ? "drift-ok" : "drift-pos"}">${Math.abs(off) < 0.0005 ? "on target" : (off > 0 ? "+" : "") + (off * 100).toFixed(1) + " pts"}</div></td>
+            <td class="hide-sm"><div class="bar" title="Current ${fmtPct(r.cur)}, after ${fmtPct(r.aft)}, target ${fmtPct(r.weight)}">
+              <div class="aft" style="width:${Math.min(100, r.aft * 100)}%"></div>
+              <div class="cur" style="width:${Math.min(100, r.cur * 100)}%"></div>
+              <div class="tgt" style="left:calc(${Math.min(100, r.weight * 100)}% - 1px)"></div>
+            </div></td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table>
+    </div>
+    <div class="legend hide-sm"><span><i style="background:var(--muted);opacity:.55"></i>Current</span><span><i style="background:var(--accent)"></i>After investing</span><span><i style="background:var(--target);width:2px"></i>Target</span></div>
+    ${missingFund.length ? `<div class="warn-box">Choose a fund in step 3 ("Buy with") for: ${missingFund.map(r => esc(r.key)).join(", ")}.</div>` : ""}
+    ${stuck.length ? `<div class="warn-box">${esc(stuck.map(r => r.key).join(", "))} ${stuck.length > 1 ? "have" : "has"} a 0% target, so ${stuck.length > 1 ? "they" : "it"} won't get any new money.</div>` : ""}
+    <div class="row" style="margin-top:14px"><strong>Your buy list</strong><button id="btn-copy" style="margin-left:auto">Copy</button></div>
+    <pre class="buylist" id="buylist">${esc(buyLines.join("\n"))}</pre>`;
+  $("#btn-copy").onclick = async () => {
+    try { await navigator.clipboard.writeText(buyLines.join("\n")); $("#btn-copy").textContent = "Copied"; }
+    catch { $("#btn-copy").textContent = "Copy failed"; }
+    setTimeout(() => { const b = $("#btn-copy"); if (b) b.textContent = "Copy"; }, 1500);
+  };
+}
+
+function renderAll() { renderHoldings(); renderTargets(); renderResults(); save(); }
+function refresh() { updateHoldTotal(); renderResults(); save(); }
+
+/* ---------- Import parsing ---------- */
+const STOP = new Set(("IRA ROTH USD ETF ETFS TOTAL VALUE ACCT NA THE AND OR OF INC FUND FUNDS INDEX IDX MKT US USA LLC CORP CO " +
+  "CLASS CL ADM INV INST SHS SHARE SHARES STOCK BOND BONDS INTL TR TRUST PORT II III LTD PLC ADR QTY DAY DAYS GAIN LOSS COST " +
+  "BASIS LAST PRICE CHG NAV YTD AM PM ET EST EDT EST DATE AS ON TO IN MY BUY SELL TRADE VIEW MORE SPDR IS IT BE AT BY NO YES " +
+  "ALL NEW APP HELP LOG OUT SIGN HOME PLAN REIT SMALL LARGE CAP MID GROWTH INCOME MONEY CORE POS ID NUM APY APR PCT AVG HIGH " +
+  "LOW OPEN LINK PAGE HIDE SHOW FREE FEE FEES ETN DRIP CUSIP SYM MMF QTR MO YR ONE DAY'S TODAY ACCOUNT BAL NET").split(" "));
+
+// Drop anything that looks like personal info before looking for tickers/amounts.
+function scrubLine(line) {
+  return line
+    .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, " ")                       // emails
+    .replace(/\b\d{3}-\d{2}-\d{4}\b/g, " ")                          // SSN-shaped
+    .replace(/(?:[*xX•·.#]{2,}|#)\s?[-\s]?\d{2,}/g, " ")             // masked account numbers (****1234, ...1234)
+    .replace(/\b[A-Za-z]{1,3}\d{5,}\b/g, " ")                        // account ids like Z12345678
+    .replace(/\b\d{2,}-\d{3,}(?:-\d+)*\b/g, " ")                     // dashed account numbers
+    .replace(/(?<![\d.,$])\d{6,}(?![\d.,])/g, " ");                  // long bare digit runs
+}
+function findTicker(line) {
+  const tokens = line.split(/[\s,;\t"]+/)
+    .map(t => t.replace(/[*†‡¹²³]+$/g, ""))
+    .map(t => /^[A-Z][A-Z0l1|]{1,4}$/.test(t) ? t.replace(/[l1|]/g, "I").replace(/0/g, "O") : t) // common OCR slips: VTl -> VTI
+    .map(t => t.replace(/^[^A-Z]+|[^A-Z.]+$/g, ""))
+    .map(t => !KNOWN[t] && /I$/.test(t) && KNOWN[t.slice(0, -1)] ? t.slice(0, -1) : t); // stray "|" read as I: VTII -> VTI
+  const cands = tokens.filter(t => /^[A-Z]{2,5}(\.[A-Z])?$/.test(t) && !STOP.has(t));
+  return cands.find(t => KNOWN[t]) || cands[0] || "";
+}
+function findValue(line) {
+  // Amounts with 1-2 decimals or thousands separators; share counts (3+ decimals) and percents don't match.
+  // The largest unsigned amount on a row is usually the position's current value.
+  const re = /([+\-−(]?)\s?\$?\s?(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{1,2})(?![\d%,])(?!\s?%)/g;
+  let best = 0, m;
+  while ((m = re.exec(line))) {
+    if (m[1]) continue;                              // signed / parenthesized: a change or loss, not a balance
+    best = Math.max(best, parseFloat(m[2].replace(/,/g, "")));
+  }
+  return best;
+}
+function parseLines(text) {
+  const rows = [], seen = new Set();
+  let prev = null; // last holding found, if it was on the previous line
+  for (const raw of text.split(/\r?\n/)) {
+    const line = scrubLine(raw);
+    const last = prev; prev = null;
+    // Some brokerages (e.g. Vanguard) print the fund name on the line under the ticker.
+    if (last && !last.name && !findValue(line)) {
+      const desc = cleanName(line);
+      if (/[A-Za-z]{3,}/.test(desc) && !/^(total|etfs?|mutual funds?|stocks?|cash)\b/i.test(desc)) { last.name = desc; continue; }
+    }
+    const ticker = findTicker(line);
+    if (!ticker) continue;
+    const rest = line.slice(line.indexOf(ticker) + ticker.length);
+    const value = findValue(rest);
+    if (!value || seen.has(ticker)) continue;
+    seen.add(ticker);
+    // The words between the ticker and the first number are usually the fund's description.
+    const desc = cleanName(rest.split(/[$\d]/)[0]);
+    prev = { ticker, value, name: /[A-Za-z]{3,}/.test(desc) ? desc : "" };
+    rows.push(prev);
+  }
+  return rows;
+}
+function splitCSV(text) {
+  const rows = []; let row = [], cell = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') q = false;
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { row.push(cell); cell = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell); rows.push(row); row = []; cell = "";
+    } else cell += c;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+function parseCSV(text) {
+  const rows = splitCSV(text);
+  const VAL = [/current value/i, /market value/i, /mkt val/i, /total value/i, /^\s*value\s*$/i, /^\s*amount\s*$/i, /balance/i];
+  for (let h = 0; h < Math.min(rows.length, 25); h++) {
+    const hdr = rows[h].map(c => c.trim());
+    const si = hdr.findIndex(c => /^(symbol|ticker)\b/i.test(c));
+    let vi = -1;
+    for (const re of VAL) { vi = hdr.findIndex(c => re.test(c)); if (vi >= 0) break; }
+    if (si < 0 || vi < 0) continue;
+    const di = hdr.findIndex(c => /^(description|investment name|security name|fund name|name|security)\b/i.test(c));
+    // Read only the symbol, fund description and value columns; every other column (account numbers etc.) is ignored.
+    const out = [], seen = new Set();
+    for (const r of rows.slice(h + 1)) {
+      let sym = String(r[si] || "").trim();
+      if (/cash/i.test(sym)) sym = "CASH";
+      sym = sym.replace(/[*†]+$/, "").toUpperCase();
+      if (!/^[A-Z][A-Z0-9.\-]{0,6}$/.test(sym) || STOP.has(sym)) continue;
+      const value = parseMoney(String(r[vi] || "").replace(/^\(.*\)$/, ""));
+      if (!value) continue;
+      if (seen.has(sym)) continue;
+      seen.add(sym);
+      out.push({ ticker: sym, value, name: di >= 0 ? cleanName(r[di]) : "" });
+    }
+    return out;
+  }
+  return parseLines(rows.map(r => r.join("  ")).join("\n")); // no header found: fall back to line parsing
+}
+
+function mergeImported(rows, source) {
+  if (!rows.length) {
+    setStatus(`No holdings found in that ${source}. Make sure tickers and dollar values are visible, or enter them by hand.`, "err");
+    return;
+  }
+  // Drop the empty placeholder rows, then update matching tickers and add new ones.
+  state.holdings = state.holdings.filter(r => r.ticker || r.value);
+  let added = 0, updated = 0;
+  for (const { ticker, value, name } of rows) {
+    const ex = state.holdings.find(r => cleanTicker(r.ticker) === ticker);
+    const v = value.toFixed(2);
+    // Prefer the built-in name for known tickers; imported descriptions are often truncated or OCR-noisy.
+    const nm = NAMES[ticker] || name || "";
+    if (ex) { ex.value = v; if (!ex.name) ex.name = nm; updated++; }
+    else { state.holdings.push(newRow(ticker, v, KNOWN[ticker] || "", nm)); added++; }
+  }
+  renderAll();
+  const total = rows.reduce((s, r) => s + r.value, 0);
+  setStatus(`Imported from ${source}: ${added} added${updated ? `, ${updated} updated` : ""}, totaling ${fmt$(total)}. Compare that with your brokerage's total, then check each row below.`, "ok");
+}
+function setStatus(msg, kind = "info") {
+  const el = $("#import-status");
+  el.textContent = msg;
+  el.className = "status " + kind;
+}
+
+/* ---------- Screenshot reading (on-device) ---------- */
+function wordsOf(data) {
+  if (data.words?.length) return data.words;
+  const out = [];
+  for (const b of data.blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) out.push(...(l.words || []));
+  return out;
+}
+// Brokerage tables have wide gaps between columns, which the reader splits into separate blocks.
+// Rebuild each visual row by grouping words whose vertical centers line up, then reading them left to right.
+function rowsFromWords(words) {
+  const ws = words.filter(w => w.text && w.text.trim() && w.bbox)
+    .map(w => ({ text: w.text.trim(), x: w.bbox.x0, yc: (w.bbox.y0 + w.bbox.y1) / 2, h: w.bbox.y1 - w.bbox.y0 }));
+  if (!ws.length) return "";
+  const hs = ws.map(w => w.h).sort((a, b) => a - b);
+  const tol = Math.max(4, hs[Math.floor(hs.length / 2)] * 0.6);
+  ws.sort((a, b) => a.yc - b.yc);
+  const rows = [];
+  for (const w of ws) {
+    const row = rows[rows.length - 1];
+    if (row && Math.abs(w.yc - row.yc) <= tol) {
+      row.words.push(w);
+      row.yc = row.words.reduce((s, x) => s + x.yc, 0) / row.words.length;
+    } else rows.push({ yc: w.yc, words: [w] });
+  }
+  return rows.map(r => r.words.sort((a, b) => a.x - b.x).map(w => w.text).join(" ")).join("\n");
+}
+let tessLoading = null;
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve();
+  if (!tessLoading) {
+    tessLoading = new Promise((res, rej) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+      s.crossOrigin = "anonymous";
+      s.onload = res;
+      s.onerror = () => { tessLoading = null; rej(new Error("Couldn't load the text reader. Check your connection.")); };
+      document.head.appendChild(s);
+    });
+  }
+  return tessLoading;
+}
+async function readImage(file) {
+  if (!file || !/^image\//.test(file.type)) { setStatus("That file isn't an image.", "err"); return; }
+  let canvas = null;
+  try {
+    setStatus("Loading the text reader (first time only)…");
+    await loadTesseract();
+    const bmp = await createImageBitmap(file);
+    // Brokerage tables use small text; upscaling to ~3200px wide makes tickers like VTI/VWO readable.
+    const scale = Math.max(1, Math.min(3, 3200 / bmp.width));
+    canvas = document.createElement("canvas");
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    // Dark-mode screenshots read better inverted to dark text on a light background.
+    const probe = document.createElement("canvas"); probe.width = probe.height = 24;
+    const pctx = probe.getContext("2d", { willReadFrequently: true });
+    pctx.drawImage(bmp, 0, 0, 24, 24);
+    const px = pctx.getImageData(0, 0, 24, 24).data;
+    let lum = 0; for (let i = 0; i < px.length; i += 4) lum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    const dark = lum / (px.length / 4) < 110;
+    ctx.filter = dark ? "grayscale(1) invert(1) contrast(1.2)" : "grayscale(1) contrast(1.2)";
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    bmp.close();
+
+    const worker = await Tesseract.createWorker("eng", 1, {
+      logger: m => { if (m.status === "recognizing text") setStatus(`Reading screenshot on your device… ${Math.round(m.progress * 100)}%`); },
+    });
+    let text = "";
+    try {
+      // Sparse-text mode finds every bit of text in a wide table; rows are then rebuilt from word positions.
+      await worker.setParameters({ tessedit_pageseg_mode: "11" });
+      const { data } = await worker.recognize(canvas, {}, { text: true, blocks: true });
+      text = rowsFromWords(wordsOf(data)) || data.text || "";
+    }
+    finally { await worker.terminate(); }
+    mergeImported(parseLines(text), "screenshot");
+    text = "";
+  } catch (e) {
+    setStatus(e.message || "Couldn't read that image.", "err");
+  } finally {
+    if (canvas) { canvas.width = canvas.height = 0; }
+  }
+}
+async function readTextFile(file) {
+  try {
+    const text = await file.text();
+    mergeImported(/\.csv$/i.test(file.name) || /csv/.test(file.type) ? parseCSV(text) : parseLines(text), "file");
+  } catch { setStatus("Couldn't read that file.", "err"); }
+}
+function handleFile(file) {
+  if (!file) return;
+  if (/^image\//.test(file.type)) readImage(file);
+  else if (/\.(csv|txt|tsv)$/i.test(file.name) || /^text\//.test(file.type)) readTextFile(file);
+  else setStatus("Use an image (PNG/JPG), a CSV, or a text file. For Excel files, save as CSV first.", "err");
+}
+
+/* ---------- Persistence (opt-in, no dollar amounts) ---------- */
+const STORE_KEY = "backdoor-roth-allocator-v1";
+function save() {
+  if (!$("#remember").checked) return;
+  const data = {
+    amount: state.amount, mode: state.mode,
+    funds: state.holdings.filter(r => r.ticker).map(r => ({ ticker: r.ticker, cls: r.cls, name: r.name })),
+    fundTargets: state.fundTargets, addedFunds: state.addedFunds, addedNames: state.addedNames,
+    classTargets: state.classTargets, addedClasses: state.addedClasses, classFund: state.classFund,
+  };
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch {}
+}
+function load() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); } catch {}
+  if (!data) return false;
+  Object.assign(state, {
+    amount: +data.amount || 7500, mode: data.mode === "class" ? "class" : "fund",
+    fundTargets: data.fundTargets || {}, addedFunds: data.addedFunds || [], addedNames: data.addedNames || {},
+    classTargets: data.classTargets || {}, addedClasses: data.addedClasses || [], classFund: data.classFund || {},
+  });
+  state.holdings = (data.funds || []).map(f => newRow(cleanTicker(f.ticker), "", f.cls || "", cleanName(f.name)));
+  return true;
+}
+
+/* ---------- Events ---------- */
+$("#amount").addEventListener("input", e => { state.amount = parseMoney(e.target.value); renderResults(); save(); });
+$("#amount").addEventListener("change", e => { e.target.value = state.amount ? state.amount.toLocaleString("en-US") : ""; });
+document.querySelectorAll("[data-amt]").forEach(b => b.addEventListener("click", () => {
+  state.amount = +b.dataset.amt; $("#amount").value = state.amount.toLocaleString("en-US"); renderResults(); save();
+}));
+
+const holdBody = $("#hold-body");
+holdBody.addEventListener("input", e => {
+  const tr = e.target.closest("tr[data-id]"); if (!tr) return;
+  const row = state.holdings.find(r => r.id === +tr.dataset.id); if (!row) return;
+  if (e.target.dataset.f === "value") { row.value = e.target.value; refresh(); }
+});
+holdBody.addEventListener("change", e => {
+  const tr = e.target.closest("tr[data-id]"); if (!tr) return;
+  const row = state.holdings.find(r => r.id === +tr.dataset.id); if (!row) return;
+  const f = e.target.dataset.f;
+  if (f === "ticker") {
+    const prev = row.ticker;
+    row.ticker = cleanTicker(e.target.value); e.target.value = row.ticker;
+    const cls = tr.querySelector('[data-f="cls"]'); if (cls) cls.placeholder = KNOWN[row.ticker] || "Other";
+    // Fill the name from the built-in list unless the user typed their own.
+    if (!row.name || row.name === NAMES[prev]) row.name = NAMES[row.ticker] || "";
+    const nm = tr.querySelector('[data-f="name"]'); if (nm) nm.value = row.name;
+  } else if (f === "name") { row.name = cleanName(e.target.value); e.target.value = row.name; }
+  else if (f === "cls") row.cls = e.target.value.trim();
+  else if (f === "value") { const v = parseMoney(e.target.value); row.value = v ? v.toFixed(2) : ""; e.target.value = row.value; }
+  renderTargets(); refresh();
+});
+holdBody.addEventListener("click", e => {
+  const id = e.target.dataset.del; if (!id) return;
+  state.holdings = state.holdings.filter(r => r.id !== +id);
+  renderAll();
+});
+$("#btn-add-row").onclick = () => {
+  state.holdings.push(newRow()); renderHoldings();
+  const inputs = holdBody.querySelectorAll('[data-f="ticker"]'); inputs[inputs.length - 1]?.focus();
+};
+$("#btn-clear").onclick = () => {
+  if (state.holdings.length && !confirm("Remove all holdings?")) return;
+  state.holdings = []; setStatus(""); renderAll();
+};
+$("#btn-sample").onclick = () => {
+  state.holdings = [["VTI", "4200.00"], ["VXUS", "1500.00"], ["BND", "800.00"]].map(([t, v]) => newRow(t, v, KNOWN[t], NAMES[t]));
+  state.fundTargets = { VTI: "60", VXUS: "30", BND: "10" };
+  state.classTargets = { "US Stocks": "60", "International Stocks": "30", "Bonds": "10" };
+  state.addedFunds = []; state.addedClasses = []; state.addedNames = {};
+  setStatus("Loaded sample data. Replace it with your own.", "info");
+  renderAll();
+};
+
+// Import buttons
+$("#btn-img").onclick = () => $("#file-img").click();
+$("#btn-csv").onclick = () => $("#file-csv").click();
+$("#btn-paste").onclick = () => { $("#paste-box").classList.toggle("hidden"); $("#paste-text").focus(); };
+$("#file-img").onchange = e => { handleFile(e.target.files[0]); e.target.value = ""; };
+$("#file-csv").onchange = e => { handleFile(e.target.files[0]); e.target.value = ""; };
+$("#btn-parse").onclick = () => {
+  const ta = $("#paste-text");
+  const text = ta.value; ta.value = "";
+  if (!text.trim()) { setStatus("Paste some text first.", "err"); return; }
+  mergeImported(text.includes(",") && /symbol|ticker/i.test(text) ? parseCSV(text) : parseLines(text), "pasted text");
+  $("#paste-box").classList.add("hidden");
+};
+const drop = $("#drop");
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => handleFile(e.dataTransfer.files[0]));
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => { if (!drop.contains(e.target)) e.preventDefault(); });
+document.addEventListener("paste", e => {
+  const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith("image/"));
+  if (item) { e.preventDefault(); readImage(item.getAsFile()); }
+});
+
+// Targets
+$("#mode-fund").onclick = () => { state.mode = "fund"; renderTargets(); renderResults(); save(); };
+$("#mode-class").onclick = () => { state.mode = "class"; renderTargets(); renderResults(); save(); };
+const tgtBody = $("#tgt-body");
+tgtBody.addEventListener("input", e => {
+  const k = e.target.dataset.tgt;
+  if (k !== undefined) {
+    (state.mode === "fund" ? state.fundTargets : state.classTargets)[k] = e.target.value.replace(/[^0-9.]/g, "");
+    renderResults(); save();
+  }
+});
+tgtBody.addEventListener("change", e => {
+  const k = e.target.dataset.fund;
+  if (k !== undefined) { state.classFund[k] = cleanTicker(e.target.value); e.target.value = state.classFund[k]; renderResults(); save(); }
+  const a = e.target.dataset.addname;
+  if (a !== undefined) { state.addedNames[a] = cleanName(e.target.value); e.target.value = state.addedNames[a]; renderResults(); save(); }
+});
+tgtBody.addEventListener("click", e => {
+  const k = e.target.dataset.rmkey; if (k === undefined) return;
+  if (state.mode === "fund") { state.addedFunds = state.addedFunds.filter(x => x !== k); delete state.fundTargets[k]; delete state.addedNames[k]; }
+  else { state.addedClasses = state.addedClasses.filter(x => x !== k); delete state.classTargets[k]; }
+  renderTargets(); renderResults(); save();
+});
+function addKey() {
+  const inp = $("#add-key");
+  if (state.mode === "fund") {
+    const t = cleanTicker(inp.value);
+    if (t && !targetKeys().includes(t)) state.addedFunds.push(t);
+  } else {
+    const c = inp.value.trim().slice(0, 40);
+    if (c && !targetKeys().includes(c)) state.addedClasses.push(c);
+  }
+  inp.value = ""; renderTargets(); renderResults(); save();
+}
+$("#btn-add-key").onclick = addKey;
+$("#add-key").addEventListener("keydown", e => { if (e.key === "Enter") addKey(); });
+$("#btn-use-current").onclick = () => {
+  const groups = buildGroups();
+  const T = groups.reduce((s, g) => s + g.value, 0);
+  if (T <= 0) { alert("Enter current values first."); return; }
+  const t = state.mode === "fund" ? state.fundTargets : state.classTargets;
+  const vals = groups.map(g => Math.round(g.value / T * 1000) / 10);
+  const diff = Math.round((100 - vals.reduce((a, b) => a + b, 0)) * 10) / 10;
+  vals[vals.indexOf(Math.max(...vals))] = Math.round((Math.max(...vals) + diff) * 10) / 10;
+  groups.forEach((g, i) => { t[g.key] = String(vals[i]); });
+  renderTargets(); renderResults(); save();
+};
+
+// Pro-rata quick check
+$("#pretax").addEventListener("input", () => {
+  const P = parseMoney($("#pretax").value), C = state.amount, out = $("#prorata-out");
+  if (!P) { out.textContent = "With $0 of pre-tax IRA money, none of the conversion should be taxable."; out.style.color = "var(--good)"; return; }
+  const taxable = C * P / (P + C);
+  out.style.color = "var(--warn)";
+  out.textContent = `≈ ${fmt$(taxable)} (${fmtPct(P / (P + C), 0)}) of a ${fmt$(C)} conversion would be taxable. Form 8606 does the exact math.`;
+});
+
+$("#remember").addEventListener("change", e => {
+  if (e.target.checked) save();
+  else { try { localStorage.removeItem(STORE_KEY); } catch {} }
+});
+
+/* ---------- Start ---------- */
+if (load()) { $("#remember").checked = true; $("#amount").value = state.amount.toLocaleString("en-US"); }
+renderAll();
+</script>
+</body>
+</html>
